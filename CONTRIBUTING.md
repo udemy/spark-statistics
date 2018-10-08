@@ -4,8 +4,8 @@ We’d love to accept your patches and contributions to this project. There are 
 
 # Code reviews
 
-All submissions require review. We use GitHub pull requests for this purpose. Consult GitHub Help for more information on using pull requests.
+All submissions require review. We use GitHub pull requests for this purpose. Consult [GitHub Help](https://help.github.com/) for more information on using pull requests.
 
 # Community Guidelines
 
-This project follows Indie Web’s Open Source Conduct Guidelines.
+This project follows IndieWeb’s [Open Source Conduct Guidelines](https://indieweb.org/code-of-conduct).
