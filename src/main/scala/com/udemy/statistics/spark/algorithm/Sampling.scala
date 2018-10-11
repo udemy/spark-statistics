@@ -17,6 +17,7 @@ limitations under the License.
 package com.udemy.statistics.spark.algorithm
 
 import org.apache.spark.sql.{Dataset, SparkSession}
+import org.apache.commons.lang3.RandomUtils.nextLong
 
 import scala.annotation.tailrec
 import scala.Numeric.Implicits._
@@ -38,25 +39,25 @@ object Sampling {
 
     val arrayThreshold = 2000000
 
-    case class CumulativeFrequency(value: T, upper: Int)
-    case class Frequency(value: T, frequency: Int)
+    case class CumulativeFrequency(value: T, upper: Long)
+    case class Frequency(value: T, frequency: Long)
 
     sealed trait Bootstrappable {
-      def apply(num: Int): Option[T]
+      def apply(num: Long): Option[T]
 
-      def size: Int
+      def size: Long
     }
 
     case class BootstrappableArray(array: Array[T]) extends Bootstrappable {
-      def apply(num: Int): Option[T] = array.lift(num)
+      def apply(num: Long): Option[T] = array.lift(num.toInt)
 
-      def size: Int = array.length
+      def size: Long = array.length
     }
 
     case class BootstrappableCumulativeFreqs(cumulativeFreqs: List[CumulativeFrequency]) extends Bootstrappable {
-      def apply(num: Int): Option[T] = {
+      def apply(num: Long): Option[T] = {
         @tailrec
-        def getValue(cumulativeFreqs: List[CumulativeFrequency], num: Int): Option[T] = cumulativeFreqs match {
+        def getValue(cumulativeFreqs: List[CumulativeFrequency], num: Long): Option[T] = cumulativeFreqs match {
           case Nil => None
           case CumulativeFrequency(value, upper) :: tail =>
             if (num < upper) Some(value)
@@ -65,21 +66,21 @@ object Sampling {
         getValue(cumulativeFreqs, num)
       }
 
-      def size: Int = cumulativeFreqs.last.upper
+      def size: Long = cumulativeFreqs.last.upper
     }
 
     case class BootstrappableHybrid(mostFrequentValue: CumulativeFrequency,
                                     remainingValues: Array[T]) extends Bootstrappable {
-      def apply(num: Int): Option[T] = {
+      def apply(num: Long): Option[T] = {
         if (num < 0) None
         else if (num < mostFrequentValue.upper) Some(mostFrequentValue.value)
-        else remainingValues.lift(num - mostFrequentValue.upper)
+        else remainingValues.lift((num - mostFrequentValue.upper).toInt)
       }
 
-      def size: Int = mostFrequentValue.upper + remainingValues.length
+      def size: Long = mostFrequentValue.upper + remainingValues.length
     }
 
-    def optimalBootstrappable(data: Dataset[T]): (Bootstrappable, Int) = {
+    def optimalBootstrappable(data: Dataset[T]): (Bootstrappable, Long) = {
       val size = data.count
       val bootstrappable = {
         if (size < 1) BootstrappableArray(Array.empty)
@@ -94,20 +95,20 @@ object Sampling {
           BootstrappableCumulativeFreqs(cumulativeFreqs)
         }
       }
-      (bootstrappable, size.toInt)
+      (bootstrappable, size)
     }
 
-    def bootstrapMean(dataAndSize: (Bootstrappable, Int)): Double = {
+    def bootstrapMean(dataAndSize: (Bootstrappable, Long)): Double = {
       val data = dataAndSize._1
       val size = dataAndSize._2
       if (size < 1) Double.NaN
       else {
         @tailrec
         // This has a potential for overflow, should be refactored to take that into consideration
-        def sumValues(current: Int, acc: Double = 0D): Double = {
+        def sumValues(current: Long, acc: Double = 0D): Double = {
           if (current == 0) acc
           else {
-            val value = data(scala.util.Random.nextInt(size.toInt)) match {
+            val value = data(nextLong(0, size)) match {
               case Some(num) => num.toDouble
               case None => Double.NaN
             }
