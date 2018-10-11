@@ -27,7 +27,7 @@ class SamplingSpec extends FlatSpec with Matchers with GeneratorDrivenPropertyCh
   Logger.getLogger("org").setLevel(Level.ERROR)
   Logger.getLogger("akka").setLevel(Level.ERROR)
 
-  private val spark = SparkSession.builder().master("local").appName("spark session").getOrCreate()
+  private val spark = SparkSession.builder().master("local").getOrCreate()
   import spark.implicits._
 
   "bootstrap" should "draw bootstrap means from Dataset of numeric values" in {
