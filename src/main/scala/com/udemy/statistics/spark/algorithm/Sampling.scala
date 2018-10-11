@@ -43,8 +43,6 @@ object Sampling {
 
     sealed trait Bootstrappable {
       def apply(num: Long): Option[T]
-
-      def size: Long
     }
 
     case class BootstrappableCumulativeFreqs(cumulativeFreqs: List[CumulativeFrequency]) extends Bootstrappable {
@@ -58,8 +56,6 @@ object Sampling {
         }
         getValue(cumulativeFreqs, num)
       }
-
-      def size: Long = cumulativeFreqs.last.upper
     }
 
     case class BootstrappableHybrid(mostFrequentValue: CumulativeFrequency,
@@ -69,8 +65,6 @@ object Sampling {
         else if (num < mostFrequentValue.upper) Some(mostFrequentValue.value)
         else remainingValues.lift((num - mostFrequentValue.upper).toInt)
       }
-
-      def size: Long = mostFrequentValue.upper + remainingValues.length
     }
 
     def optimalBootstrappable(data: Dataset[T]): (Bootstrappable, Long) = {
