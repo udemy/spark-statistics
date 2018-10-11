@@ -1,0 +1,143 @@
+/*
+Copyright 2018 Udemy, Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package com.udemy.statistics.spark.algorithm
+
+import org.apache.spark.sql.{Dataset, SparkSession}
+
+import scala.annotation.tailrec
+import scala.Numeric.Implicits._
+import scala.reflect.ClassTag
+
+object Sampling {
+
+  object BootstrapStatistic extends Enumeration {
+    type Statistic = Value
+    val Mean: Statistic = Value
+  }
+
+  def bootstrap[T: Numeric](spark: SparkSession,
+                            data: Dataset[T],
+                            draws: Int,
+                            statistic: BootstrapStatistic.Statistic = BootstrapStatistic.Mean)
+                           (implicit c: ClassTag[T]): Dataset[Double] = {
+    import spark.implicits._
+
+    val arrayThreshold = 2000000
+
+    case class CumulativeFrequency(value: T, upper: Int)
+    case class Frequency(value: T, frequency: Int)
+
+    sealed trait Bootstrappable {
+      def apply(num: Int): Option[T]
+
+      def size: Int
+    }
+
+    case class BootstrappableArray(array: Array[T]) extends Bootstrappable {
+      def apply(num: Int): Option[T] = array.lift(num)
+
+      def size: Int = array.length
+    }
+
+    case class BootstrappableCumulativeFreqs(cumulativeFreqs: List[CumulativeFrequency]) extends Bootstrappable {
+      def apply(num: Int): Option[T] = {
+        @tailrec
+        def getValue(cumulativeFreqs: List[CumulativeFrequency], num: Int): Option[T] = cumulativeFreqs match {
+          case Nil => None
+          case CumulativeFrequency(value, upper) :: tail =>
+            if (num < upper) Some(value)
+            else getValue(tail, num)
+        }
+        getValue(cumulativeFreqs, num)
+      }
+
+      def size: Int = cumulativeFreqs.last.upper
+    }
+
+    case class BootstrappableHybrid(mostFrequentValue: CumulativeFrequency,
+                                    remainingValues: Array[T]) extends Bootstrappable {
+      def apply(num: Int): Option[T] = {
+        if (num < 0) None
+        else if (num < mostFrequentValue.upper) Some(mostFrequentValue.value)
+        else remainingValues.lift(num - mostFrequentValue.upper)
+      }
+
+      def size: Int = mostFrequentValue.upper + remainingValues.length
+    }
+
+    def optimalBootstrappable(data: Dataset[T]): (Bootstrappable, Int) = {
+      val size = data.count
+      val bootstrappable = {
+        if (size < 1) BootstrappableArray(Array.empty)
+        else if (size < arrayThreshold) BootstrappableArray(data.collect)
+        else {
+          val frequencies = data.rdd
+            .map((_, 1))
+            .reduceByKey(_ + _)
+            .map(x => Frequency(x._1, x._2)).collect.toList
+          val cumulativeFreqs = buildSortedCumulativeFrequencies(frequencies)
+
+          BootstrappableCumulativeFreqs(cumulativeFreqs)
+        }
+      }
+      (bootstrappable, size.toInt)
+    }
+
+    def bootstrapMean(dataAndSize: (Bootstrappable, Int)): Double = {
+      val data = dataAndSize._1
+      val size = dataAndSize._2
+      if (size < 1) Double.NaN
+      else {
+        @tailrec
+        // This has a potential for overflow, should be refactored to take that into consideration
+        def sumValues(current: Int, acc: Double = 0D): Double = {
+          if (current == 0) acc
+          else {
+            val value = data(scala.util.Random.nextInt(size.toInt)) match {
+              case Some(num) => num.toDouble
+              case None => Double.NaN
+            }
+            sumValues(current - 1, acc + value)
+          }
+        }
+        sumValues(size) / size
+      }
+    }
+
+    def buildSortedCumulativeFrequencies(frequencies: List[Frequency]): List[CumulativeFrequency] = {
+      @tailrec
+      def buildList(freqs: List[Frequency],
+                    acc: List[CumulativeFrequency] = List(),
+                    currMax: Int = 0): List[CumulativeFrequency] = freqs match {
+        case Nil => List()
+        case Frequency(value, freq) :: Nil =>
+          CumulativeFrequency(value, currMax + freq.toInt) :: acc
+        case Frequency(value, freq) :: tail =>
+          buildList(tail, CumulativeFrequency(value, currMax + freq.toInt) :: acc, currMax + freq.toInt)
+      }
+      val result = buildList(frequencies.sortWith(_.frequency > _.frequency))
+      result.reverse
+    }
+
+    val (bootstrappable, size) = optimalBootstrappable(data)
+    val b = spark.sparkContext.broadcast(bootstrappable, size)
+    val bootstraps = spark.sparkContext.parallelize(1 to draws).map(_ => bootstrapMean(b.value)).toDS
+    b.unpersist()
+    b.destroy()
+    bootstraps
+  }
+}
