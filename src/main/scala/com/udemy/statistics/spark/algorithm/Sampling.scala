@@ -33,11 +33,10 @@ object Sampling {
   def bootstrap[T: Numeric](spark: SparkSession,
                             data: Dataset[T],
                             draws: Int,
-                            statistic: BootstrapStatistic.Statistic = BootstrapStatistic.Mean)
+                            statistic: BootstrapStatistic.Statistic = BootstrapStatistic.Mean,
+                            useFrequencies: Boolean = true)
                            (implicit c: ClassTag[T]): Dataset[Double] = {
     import spark.implicits._
-
-    val arrayThreshold = 2000000
 
     case class CumulativeFrequency(value: T, upper: Long)
     case class Frequency(value: T, frequency: Long)
@@ -46,12 +45,6 @@ object Sampling {
       def apply(num: Long): Option[T]
 
       def size: Long
-    }
-
-    case class BootstrappableArray(array: Array[T]) extends Bootstrappable {
-      def apply(num: Long): Option[T] = array.lift(num.toInt)
-
-      def size: Long = array.length
     }
 
     case class BootstrappableCumulativeFreqs(cumulativeFreqs: List[CumulativeFrequency]) extends Bootstrappable {
@@ -83,9 +76,8 @@ object Sampling {
     def optimalBootstrappable(data: Dataset[T]): (Bootstrappable, Long) = {
       val size = data.count
       val bootstrappable = {
-        if (size < 1) BootstrappableArray(Array.empty)
-        else if (size < arrayThreshold) BootstrappableArray(data.collect)
-        else {
+        if (size < 1) BootstrappableCumulativeFreqs(buildSortedCumulativeFrequencies(List.empty))
+        else if (useFrequencies) {
           val frequencies = data.rdd
             .map((_, 1))
             .reduceByKey(_ + _)
@@ -93,6 +85,14 @@ object Sampling {
           val cumulativeFreqs = buildSortedCumulativeFrequencies(frequencies)
 
           BootstrappableCumulativeFreqs(cumulativeFreqs)
+        }
+        else {
+          val mostFrequentValueAndCount = data.rdd
+            .map((_, 1)).reduceByKey(_ + _)
+            .reduce((val1, val2) => if (val1._2 > val2._2) val1 else val2)
+          val mostFrequentValue = CumulativeFrequency(mostFrequentValueAndCount._1, mostFrequentValueAndCount._2)
+          val remainingValues = data.filter(_ != mostFrequentValue.value).collect
+          BootstrappableHybrid(mostFrequentValue, remainingValues)
         }
       }
       (bootstrappable, size)
@@ -134,11 +134,13 @@ object Sampling {
       result.reverse
     }
 
-    val (bootstrappable, size) = optimalBootstrappable(data)
-    val b = spark.sparkContext.broadcast(bootstrappable, size)
-    val bootstraps = spark.sparkContext.parallelize(1 to draws).map(_ => bootstrapMean(b.value)).toDS
-    b.unpersist()
-    b.destroy()
-    bootstraps
+    if (draws < 1) spark.emptyDataset[Double]
+    else {
+      val (bootstrappable, size) = optimalBootstrappable(data)
+      val b = spark.sparkContext.broadcast(bootstrappable, size)
+      val bootstraps = spark.sparkContext.parallelize(1 to draws).map(_ => bootstrapMean(b.value)).toDS
+      b.unpersist()
+      bootstraps
+    }
   }
 }
