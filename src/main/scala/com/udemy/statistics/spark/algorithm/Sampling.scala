@@ -42,35 +42,38 @@ object Sampling {
     case class Frequency(value: T, frequency: Long)
 
     sealed trait Bootstrappable {
-      def apply(num: Long): Option[T]
+      def apply(index: Long): Option[T]
+      val size: Long
     }
 
-    case class BootstrappableCumulativeFreqs(cumulativeFreqs: List[CumulativeFrequency]) extends Bootstrappable {
-      def apply(num: Long): Option[T] = {
+    case class BootstrappableCumulativeFreqs(cumulativeFreqs: List[CumulativeFrequency], size: Long) extends Bootstrappable {
+      def apply(index: Long): Option[T] = {
         @tailrec
-        def getValue(cumulativeFreqs: List[CumulativeFrequency], num: Long): Option[T] = cumulativeFreqs match {
+        def getValue(cumulativeFreqs: List[CumulativeFrequency], index: Long): Option[T] = cumulativeFreqs match {
           case Nil => None
           case CumulativeFrequency(value, upper) :: tail =>
-            if (num < upper) Some(value)
-            else getValue(tail, num)
+            if (index < upper) Some(value)
+            else getValue(tail, index)
         }
-        getValue(cumulativeFreqs, num)
+        if (index < 0 || index >= size) None
+        else getValue(cumulativeFreqs, index)
       }
     }
 
     case class BootstrappableHybrid(mostFrequentValue: CumulativeFrequency,
-                                    remainingValues: Array[T]) extends Bootstrappable {
-      def apply(num: Long): Option[T] = {
-        if (num < 0) None
-        else if (num < mostFrequentValue.upper) Some(mostFrequentValue.value)
-        else remainingValues.lift((num - mostFrequentValue.upper).toInt)
+                                    remainingValues: Array[T],
+                                    size: Long) extends Bootstrappable {
+      def apply(index: Long): Option[T] = {
+        if (index < 0 || index >= size) None
+        else if (index < mostFrequentValue.upper) Some(mostFrequentValue.value)
+        else remainingValues.lift((index - mostFrequentValue.upper).toInt)
       }
     }
 
-    def optimalBootstrappable(data: Dataset[T]): (Bootstrappable, Long) = {
+    def optimalBootstrappable(data: Dataset[T]): Bootstrappable = {
       val size = data.count
       val bootstrappable = {
-        if (size < 1) BootstrappableCumulativeFreqs(buildSortedCumulativeFrequencies(List.empty))
+        if (size < 1) BootstrappableCumulativeFreqs(List.empty, size)
         else if (useFrequencies) {
           val frequencies = data.rdd
             .map((_, 1))
@@ -78,7 +81,7 @@ object Sampling {
             .map(x => Frequency(x._1, x._2)).collect.toList
           val cumulativeFreqs = buildSortedCumulativeFrequencies(frequencies)
 
-          BootstrappableCumulativeFreqs(cumulativeFreqs)
+          BootstrappableCumulativeFreqs(cumulativeFreqs, size)
         }
         else {
           val mostFrequentValueAndCount = data.rdd
@@ -86,15 +89,14 @@ object Sampling {
             .reduce((val1, val2) => if (val1._2 > val2._2) val1 else val2)
           val mostFrequentValue = CumulativeFrequency(mostFrequentValueAndCount._1, mostFrequentValueAndCount._2)
           val remainingValues = data.filter(_ != mostFrequentValue.value).collect
-          BootstrappableHybrid(mostFrequentValue, remainingValues)
+          BootstrappableHybrid(mostFrequentValue, remainingValues, size)
         }
       }
-      (bootstrappable, size)
+      bootstrappable
     }
 
-    def bootstrapMean(dataAndSize: (Bootstrappable, Long)): Double = {
-      val data = dataAndSize._1
-      val size = dataAndSize._2
+    def bootstrapMean(bootstrappable: Bootstrappable): Double = {
+      val size = bootstrappable.size
       if (size < 1) Double.NaN
       else {
         @tailrec
@@ -102,7 +104,7 @@ object Sampling {
         def sumValues(current: Long, acc: Double = 0D): Double = {
           if (current == 0) acc
           else {
-            val value = data(nextLong(0, size)) match {
+            val value = bootstrappable(nextLong(0, size)) match {
               case Some(num) => num.toDouble
               case None => Double.NaN
             }
@@ -116,9 +118,9 @@ object Sampling {
     def buildSortedCumulativeFrequencies(frequencies: List[Frequency]): List[CumulativeFrequency] = {
       @tailrec
       def buildList(freqs: List[Frequency],
-                    acc: List[CumulativeFrequency] = List(),
+                    acc: List[CumulativeFrequency] = List.empty,
                     currMax: Int = 0): List[CumulativeFrequency] = freqs match {
-        case Nil => List()
+        case Nil => List.empty
         case Frequency(value, freq) :: Nil =>
           CumulativeFrequency(value, currMax + freq.toInt) :: acc
         case Frequency(value, freq) :: tail =>
@@ -130,8 +132,7 @@ object Sampling {
 
     if (draws < 1) spark.emptyDataset[Double]
     else {
-      val (bootstrappable, size) = optimalBootstrappable(data)
-      val b = spark.sparkContext.broadcast(bootstrappable, size)
+      val b = spark.sparkContext.broadcast(optimalBootstrappable(data))
       val bootstraps = spark.sparkContext.parallelize(1 to draws).map(_ => bootstrapMean(b.value)).toDS
       b.unpersist()
       bootstraps
