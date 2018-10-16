@@ -20,7 +20,7 @@ version := "0.1"
 
 scalaVersion := "2.11.12"
 
-val sparkVersion = "2.3.0"
+val sparkVersion = "2.1.0"
 
 libraryDependencies ++= Seq(
   "org.apache.commons" % "commons-lang3" % "3.+",
